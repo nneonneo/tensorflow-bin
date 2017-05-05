@@ -1,0 +1,387 @@
+From 8c8ad99924e741fe824f8dfa2fbc90c389270266 Mon Sep 17 00:00:00 2001
+From: "Vit Stepanovs" <vistepan@microsoft.com>
+Date: Mon, 10 Apr 2017 18:27:33 -0700
+Subject: [PATCH] Optionally support building TF as a shared lib
+
+Tensorflow PR #9124
+
+Currently, TF is already built as a shared library that is included in
+the Python package. However, that library:
+- Is implicitly linked against Python libs, and thus expects Python to be
+present on the machine wherever it is used. It is undesirable for
+scenarios not requiring Python (e.g. native application that need
+TensorFlow).
+- Does not include the TF C++ API.
+
+This PR allows optionally building TF as a stand-alone DLL that does not
+have the above issues. I am also working on allowing CMake to link all
+C++ tests against that DLL, and will submit such changes in a separate
+PR.
+
+As a bonus, this PR also fixes a build break for tf_tools.cmake when GPU
+is enabled.
+---
+ tensorflow/contrib/cmake/CMakeLists.txt           |  7 ++-
+ tensorflow/contrib/cmake/tf_c.cmake               | 11 ++++
+ tensorflow/contrib/cmake/tf_python.cmake          | 23 ++++---
+ tensorflow/contrib/cmake/tf_shared_lib.cmake      | 73 +++++++++++++++++++++
+ tensorflow/contrib/cmake/tf_tools.cmake           |  6 ++
+ tensorflow/contrib/cmake/tools/create_def_file.py | 77 ++++++++++++++++-------
+ 6 files changed, 162 insertions(+), 35 deletions(-)
+ create mode 100644 tensorflow/contrib/cmake/tf_c.cmake
+ create mode 100644 tensorflow/contrib/cmake/tf_shared_lib.cmake
+
+diff --git a/tensorflow/contrib/cmake/CMakeLists.txt b/tensorflow/contrib/cmake/CMakeLists.txt
+index 3c8dc86..53bc401 100644
+--- a/tensorflow/contrib/cmake/CMakeLists.txt
++++ b/tensorflow/contrib/cmake/CMakeLists.txt
+@@ -28,6 +28,7 @@ option(tensorflow_BUILD_ALL_KERNELS "Build all OpKernels" ON)
+ option(tensorflow_BUILD_CONTRIB_KERNELS "Build OpKernels from tensorflow/contrib/..." ON)
+ option(tensorflow_BUILD_CC_TESTS "Build cc unit tests " OFF)
+ option(tensorflow_BUILD_PYTHON_TESTS "Build python unit tests " OFF)
++option(tensorflow_BUILD_SHARED_LIB "Build TensorFlow as a shared library" OFF)
+ option(tensorflow_OPTIMIZE_FOR_NATIVE_ARCH "Enable compiler optimizations for the native processor architecture (if available)" ON)
+ 
+ if (NOT WIN32)
+@@ -218,6 +219,7 @@ include(tf_core_kernels.cmake)
+ if(tensorflow_ENABLE_GRPC_SUPPORT)
+   include(tf_core_distributed_runtime.cmake)
+ endif()
++include(tf_c.cmake)
+ include(tf_cc_ops.cmake)
+ if(tensorflow_BUILD_CC_EXAMPLE)
+   include(tf_tutorials.cmake)
+@@ -227,6 +229,9 @@ if(tensorflow_BUILD_PYTHON_BINDINGS)
+   include(tensorboard)
+   include(tf_python.cmake)
+ endif()
+-if (tensorflow_BUILD_CC_TESTS OR tensorflow_BUILD_PYTHON_TESTS)
++if(tensorflow_BUILD_SHARED_LIB)
++  include(tf_shared_lib.cmake)
++endif()
++if(tensorflow_BUILD_CC_TESTS OR tensorflow_BUILD_PYTHON_TESTS)
+   include(tf_tests.cmake)
+ endif()
+diff --git a/tensorflow/contrib/cmake/tf_c.cmake b/tensorflow/contrib/cmake/tf_c.cmake
+new file mode 100644
+index 0000000..f8fe8c9
+--- /dev/null
++++ b/tensorflow/contrib/cmake/tf_c.cmake
+@@ -0,0 +1,11 @@
++set(tf_c_srcs
++    "${tensorflow_source_dir}/tensorflow/c/c_api.cc"
++    "${tensorflow_source_dir}/tensorflow/c/c_api.h"
++    "${tensorflow_source_dir}/tensorflow/c/checkpoint_reader.cc"
++    "${tensorflow_source_dir}/tensorflow/c/checkpoint_reader.h"
++    "${tensorflow_source_dir}/tensorflow/c/tf_status_helper.cc"
++    "${tensorflow_source_dir}/tensorflow/c/tf_status_helper.h"
++)
++
++add_library(tf_c OBJECT ${tf_c_srcs})
++add_dependencies(tf_c tf_core_lib tf_protos_cc)
+diff --git a/tensorflow/contrib/cmake/tf_python.cmake b/tensorflow/contrib/cmake/tf_python.cmake
+index 0605ffb..329957d 100755
+--- a/tensorflow/contrib/cmake/tf_python.cmake
++++ b/tensorflow/contrib/cmake/tf_python.cmake
+@@ -656,12 +656,6 @@ set (pywrap_tensorflow_internal_src
+     "${tensorflow_source_dir}/tensorflow/python/lib/io/py_record_writer.cc"
+     "${tensorflow_source_dir}/tensorflow/python/util/kernel_registry.h"
+     "${tensorflow_source_dir}/tensorflow/python/util/kernel_registry.cc"
+-    "${tensorflow_source_dir}/tensorflow/c/c_api.cc"
+-    "${tensorflow_source_dir}/tensorflow/c/c_api.h"
+-    "${tensorflow_source_dir}/tensorflow/c/checkpoint_reader.cc"
+-    "${tensorflow_source_dir}/tensorflow/c/checkpoint_reader.h"
+-    "${tensorflow_source_dir}/tensorflow/c/tf_status_helper.cc"
+-    "${tensorflow_source_dir}/tensorflow/c/tf_status_helper.h"
+     "${CMAKE_CURRENT_BINARY_DIR}/pywrap_tensorflow_internal.cc"
+ )
+ 
+@@ -677,6 +671,7 @@ if(WIN32)
+     #
+     add_library(pywrap_tensorflow_internal_static STATIC
+         ${pywrap_tensorflow_internal_src}
++        $<TARGET_OBJECTS:tf_c>
+         $<TARGET_OBJECTS:tf_core_lib>
+         $<TARGET_OBJECTS:tf_core_cpu>
+         $<TARGET_OBJECTS:tf_core_framework>
+@@ -692,17 +687,20 @@ if(WIN32)
+         ${PYTHON_INCLUDE_DIR}
+         ${NUMPY_INCLUDE_DIR}
+     )
+-    target_link_libraries(pywrap_tensorflow_internal_static
+-        tf_protos_cc
+-        tf_python_protos_cc
++    add_dependencies(pywrap_tensorflow_internal_static tf_protos_cc tf_python_protos_cc)
++    set(pywrap_tensorflow_internal_static_dependencies
++        $<TARGET_FILE:pywrap_tensorflow_internal_static>
++        $<TARGET_FILE:tf_protos_cc>
++        $<TARGET_FILE:tf_python_protos_cc>
+     )
+     set(pywrap_tensorflow_deffile "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_BUILD_TYPE}/pywrap_tensorflow.def")
+     set_source_files_properties(${pywrap_tensorflow_deffile} PROPERTIES GENERATED TRUE)
+ 
+     add_custom_command(TARGET pywrap_tensorflow_internal_static POST_BUILD
+         COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_def_file.py
+-            --input $<TARGET_FILE:pywrap_tensorflow_internal_static>
+-            --output ${pywrap_tensorflow_deffile}
++            --input "${pywrap_tensorflow_internal_static_dependencies}"
++            --output "${pywrap_tensorflow_deffile}"
++            --target _pywrap_tensorflow_internal.pyd
+     )
+ endif(WIN32)
+ 
+@@ -712,6 +710,7 @@ endif(WIN32)
+ # tf_python/tensorflow/python/.
+ add_library(pywrap_tensorflow_internal SHARED
+     ${pywrap_tensorflow_internal_src}
++    $<TARGET_OBJECTS:tf_c>
+     $<TARGET_OBJECTS:tf_core_lib>
+     $<TARGET_OBJECTS:tf_core_cpu>
+     $<TARGET_OBJECTS:tf_core_framework>
+@@ -733,7 +732,7 @@ target_include_directories(pywrap_tensorflow_internal PUBLIC
+     ${PYTHON_INCLUDE_DIR}
+     ${NUMPY_INCLUDE_DIR}
+ )
+-target_link_libraries(pywrap_tensorflow_internal
++target_link_libraries(pywrap_tensorflow_internal PRIVATE
+     ${tf_core_gpu_kernels_lib}
+     ${tensorflow_EXTERNAL_LIBRARIES}
+     tf_protos_cc
+diff --git a/tensorflow/contrib/cmake/tf_shared_lib.cmake b/tensorflow/contrib/cmake/tf_shared_lib.cmake
+new file mode 100644
+index 0000000..55eb43c
+--- /dev/null
++++ b/tensorflow/contrib/cmake/tf_shared_lib.cmake
+@@ -0,0 +1,73 @@
++if(WIN32)
++  # Windows: build a static library with the same objects as tensorflow.dll.
++  # This can be used to build for a standalone exe and also helps us to
++  # find all symbols that need to be exported from the dll which is needed
++  # to provide the tensorflow c/c++ api in tensorflow.dll.
++  # From the static library we create the def file with all symbols that need to
++  # be exported from tensorflow.dll. Because there is a limit of 64K sybmols
++  # that can be exported, we filter the symbols with a python script to the namespaces
++  # we need.
++  #
++  add_library(tensorflow_static STATIC
++      $<TARGET_OBJECTS:tf_c>
++      $<TARGET_OBJECTS:tf_cc>
++      $<TARGET_OBJECTS:tf_cc_framework>
++      $<TARGET_OBJECTS:tf_cc_ops>
++      $<TARGET_OBJECTS:tf_core_lib>
++      $<TARGET_OBJECTS:tf_core_cpu>
++      $<TARGET_OBJECTS:tf_core_framework>
++      $<TARGET_OBJECTS:tf_core_ops>
++      $<TARGET_OBJECTS:tf_core_direct_session>
++      $<TARGET_OBJECTS:tf_tools_transform_graph_lib>
++      $<$<BOOL:${tensorflow_ENABLE_GRPC_SUPPORT}>:$<TARGET_OBJECTS:tf_core_distributed_runtime>>
++      $<TARGET_OBJECTS:tf_core_kernels>
++      $<$<BOOL:${tensorflow_ENABLE_GPU}>:$<TARGET_OBJECTS:tf_core_kernels_cpu_only>>
++      $<$<BOOL:${tensorflow_ENABLE_GPU}>:$<TARGET_OBJECTS:tf_stream_executor>>
++  )
++
++  add_dependencies(tensorflow_static tf_protos_cc)
++  set(tensorflow_static_dependencies
++      $<TARGET_FILE:tensorflow_static>
++      $<TARGET_FILE:tf_protos_cc>
++  )
++    
++  set(tensorflow_deffile "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_BUILD_TYPE}/tensorflow.def")
++  set_source_files_properties(${tensorflow_deffile} PROPERTIES GENERATED TRUE)
++
++  add_custom_command(TARGET tensorflow_static POST_BUILD
++      COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_def_file.py
++          --input "${tensorflow_static_dependencies}"
++          --output "${tensorflow_deffile}"
++          --target tensorflow.dll
++  )
++endif(WIN32)
++
++# tensorflow is a shared library containing all of the
++# TensorFlow runtime and the standard ops and kernels.
++add_library(tensorflow SHARED
++    $<TARGET_OBJECTS:tf_c>
++    $<TARGET_OBJECTS:tf_cc>
++    $<TARGET_OBJECTS:tf_cc_framework>
++    $<TARGET_OBJECTS:tf_cc_ops>
++    $<TARGET_OBJECTS:tf_core_lib>
++    $<TARGET_OBJECTS:tf_core_cpu>
++    $<TARGET_OBJECTS:tf_core_framework>
++    $<TARGET_OBJECTS:tf_core_ops>
++    $<TARGET_OBJECTS:tf_core_direct_session>
++    $<TARGET_OBJECTS:tf_tools_transform_graph_lib>
++    $<$<BOOL:${tensorflow_ENABLE_GRPC_SUPPORT}>:$<TARGET_OBJECTS:tf_core_distributed_runtime>>
++    $<TARGET_OBJECTS:tf_core_kernels>
++    $<$<BOOL:${tensorflow_ENABLE_GPU}>:$<TARGET_OBJECTS:tf_core_kernels_cpu_only>>
++    $<$<BOOL:${tensorflow_ENABLE_GPU}>:$<TARGET_OBJECTS:tf_stream_executor>>
++    ${tensorflow_deffile}
++)
++
++target_link_libraries(tensorflow PRIVATE
++    ${tf_core_gpu_kernels_lib}
++    ${tensorflow_EXTERNAL_LIBRARIES}
++    tf_protos_cc
++)
++
++if(WIN32)
++  add_dependencies(tensorflow tensorflow_static)
++endif(WIN32)
+diff --git a/tensorflow/contrib/cmake/tf_tools.cmake b/tensorflow/contrib/cmake/tf_tools.cmake
+index 5151fdb..17bf81d 100644
+--- a/tensorflow/contrib/cmake/tf_tools.cmake
++++ b/tensorflow/contrib/cmake/tf_tools.cmake
+@@ -59,6 +59,8 @@ add_executable(${transform_graph}
+     $<TARGET_OBJECTS:tf_core_direct_session>
+     $<TARGET_OBJECTS:tf_tools_transform_graph_lib>
+     $<TARGET_OBJECTS:tf_core_kernels>
++    $<$<BOOL:${tensorflow_ENABLE_GPU}>:$<TARGET_OBJECTS:tf_core_kernels_cpu_only>>
++    $<$<BOOL:${tensorflow_ENABLE_GPU}>:$<TARGET_OBJECTS:tf_stream_executor>>
+ )
+ 
+ target_link_libraries(${transform_graph} PUBLIC
+@@ -79,6 +81,8 @@ add_executable(${summarize_graph}
+     $<TARGET_OBJECTS:tf_core_direct_session>
+     $<TARGET_OBJECTS:tf_tools_transform_graph_lib>
+     $<TARGET_OBJECTS:tf_core_kernels>
++    $<$<BOOL:${tensorflow_ENABLE_GPU}>:$<TARGET_OBJECTS:tf_core_kernels_cpu_only>>
++    $<$<BOOL:${tensorflow_ENABLE_GPU}>:$<TARGET_OBJECTS:tf_stream_executor>>
+ )
+ 
+ target_link_libraries(${summarize_graph} PUBLIC
+@@ -99,6 +103,8 @@ add_executable(${compare_graphs}
+     $<TARGET_OBJECTS:tf_core_direct_session>
+     $<TARGET_OBJECTS:tf_tools_transform_graph_lib>
+     $<TARGET_OBJECTS:tf_core_kernels>
++    $<$<BOOL:${tensorflow_ENABLE_GPU}>:$<TARGET_OBJECTS:tf_core_kernels_cpu_only>>
++    $<$<BOOL:${tensorflow_ENABLE_GPU}>:$<TARGET_OBJECTS:tf_stream_executor>>
+ )
+ 
+ target_link_libraries(${compare_graphs} PUBLIC
+diff --git a/tensorflow/contrib/cmake/tools/create_def_file.py b/tensorflow/contrib/cmake/tools/create_def_file.py
+index 950c8f7..755b78d 100644
+--- a/tensorflow/contrib/cmake/tools/create_def_file.py
++++ b/tensorflow/contrib/cmake/tools/create_def_file.py
+@@ -45,8 +45,16 @@ DUMPBIN = "dumpbin.exe"
+ EXCLUDE_RE = re.compile(r"deleting destructor|::internal::")
+ 
+ # Include if matched before exclude
+-INCLUDEPRE_RE = re.compile(r"tensorflow::internal::LogMessage|" +
+-                           r"tensorflow::internal::CheckOpMessageBuilder")
++INCLUDEPRE_RE = re.compile(r"google::protobuf::internal::ExplicitlyConstructed|"
++                           r"tensorflow::internal::LogMessage|"
++                           r"tensorflow::internal::LogString|"
++                           r"tensorflow::internal::CheckOpMessageBuilder|"
++                           r"tensorflow::internal::PickUnusedPortOrDie|"
++                           r"tensorflow::internal::ValidateDevice|"
++                           r"tensorflow::ops::internal::Enter|"
++                           r"tensorflow::strings::internal::AppendPieces|"
++                           r"tensorflow::strings::internal::CatPieces|"
++                           r"tensorflow::io::internal::JoinPathImpl")
+ 
+ # Include if matched after exclude
+ INCLUDE_RE = re.compile(r"^(TF_\w*)$|" +
+@@ -54,12 +62,27 @@ INCLUDE_RE = re.compile(r"^(TF_\w*)$|" +
+                         r"functor::|" +
+                         r"perftools::gputools")
+ 
+-
++# We want to identify data members explicitly in the DEF file, so that no one
++# can implicitly link against the DLL if they use one of the variables exported
++# from the DLL and the header they use does not decorate the symbol with
++# __declspec(dllimport). It is easier to detect what a data symbol does 
++# NOT look like, so doing it with the below regex.
++DATA_EXCLUDE_RE = re.compile(r"[)(]|"
++                             r"vftable|"
++                             r"vbtable|"
++                             r"vcall|"
++                             r"RTTI|"
++                             r"protobuf::internal::ExplicitlyConstructed")
++      
+ def get_args():
+   """Parse command line."""
++  filename_list = lambda x: x.split(";")
+   parser = argparse.ArgumentParser()
+-  parser.add_argument("--input", help="input library", required=True)
++  parser.add_argument("--input", type=filename_list,
++                      help="paths to input libraries separated by semicolons",
++                      required=True)
+   parser.add_argument("--output", help="output deffile", required=True)
++  parser.add_argument("--target", help="name of the target", required=True)
+   args = parser.parse_args()
+   return args
+ 
+@@ -68,24 +91,26 @@ def main():
+   """main."""
+   args = get_args()
+ 
+-  # Pipe dumpbin to extract all linkable symbols from a lib.
++  # Pipe dumpbin to extract all linkable symbols from libs.
+   # Good symbols are collected in candidates and also written to
+   # a temp file.
+   candidates = []
+   tmpfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+-  proc = Popen([DUMPBIN, "/nologo", "/linkermember:1", args.input], stdout=PIPE)
+-  for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
+-    cols = line.split()
+-    if len(cols) < 2:
+-      continue
+-    sym = cols[1]
+-    tmpfile.file.write(sym + "\n")
+-    candidates.append(sym)
++  for lib_path in args.input:
++    proc = Popen([DUMPBIN, "/nologo", "/linkermember:1", lib_path],
++                            stdout=PIPE)
++    for line in io.TextIOWrapper(proc.stdout, encoding="utf-8"):
++      cols = line.split()
++      if len(cols) < 2:
++        continue
++      sym = cols[1]
++      tmpfile.file.write(sym + "\n")
++      candidates.append(sym)
++    exit_code = proc.wait()
++    if exit_code != 0:
++      print("{} failed, exit={}".format(DUMPBIN, exit_code))
++      return exit_code
+   tmpfile.file.close()
+-  exit_code = proc.wait()
+-  if exit_code != 0:
+-    print("{} failed, exit={}".format(DUMPBIN, exit_code))
+-    return exit_code
+ 
+   # Run the symbols through undname to get their undecorated name
+   # so we can filter on something readable.
+@@ -93,9 +118,8 @@ def main():
+     # track dupes
+     taken = set()
+ 
+-    # Header for the def file. Since the tensorflow.dll is actually called
+-    # _pywrap_tensorflow.pyd in the python wheel, hint that in the def file.
+-    def_fp.write("LIBRARY _pywrap_tensorflow_internal.pyd\n")
++    # Header for the def file.
++    def_fp.write("LIBRARY " + args.target + "\n")
+     def_fp.write("EXPORTS\n")
+     def_fp.write("\t ??1OpDef@tensorflow@@UEAA@XZ\n")
+ 
+@@ -115,8 +139,17 @@ def main():
+           continue
+         if not INCLUDE_RE.search(line):
+           continue
+-
+-      def_fp.write("\t" + decorated + "\n")
++          
++      if "deleting destructor" in line:
++        # Some of the symbols convered by INCLUDEPRE_RE export deleting
++        # destructor symbols, which is a bad idea.
++        # So we filter out such symbols here.
++        continue
++          
++      if DATA_EXCLUDE_RE.search(line):
++        def_fp.write("\t" + decorated + "\n")
++      else:
++        def_fp.write("\t" + decorated + " DATA\n")      
+       taken.add(decorated)
+   exit_code = proc.wait()
+   if exit_code != 0:
+-- 
+2.12.2.windows.2
+

@@ -1,0 +1,35 @@
+From 5d38fd558a1553f4aef6d003bef503ca33480c2c Mon Sep 17 00:00:00 2001
+From: Robert Xiao <brx@cs.cmu.edu>
+Date: Thu, 4 May 2017 19:26:49 -0400
+Subject: [PATCH] Handle Windows paths in setup.py
+
+---
+ tensorflow/tools/pip_package/setup.py | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/tensorflow/tools/pip_package/setup.py b/tensorflow/tools/pip_package/setup.py
+index 7001f7a..0e66375 100644
+--- a/tensorflow/tools/pip_package/setup.py
++++ b/tensorflow/tools/pip_package/setup.py
+@@ -109,15 +109,15 @@ class InstallHeaders(Command):
+     install_dir = os.path.join(self.install_dir, os.path.dirname(header))
+     # Get rid of some extra intervening directories so we can have fewer
+     # directories for -I
+-    install_dir = re.sub('/google/protobuf/src', '', install_dir)
++    install_dir = re.sub(r'[/\\]google[/\\]protobuf[/\\]src', '', install_dir)
+ 
+     # Copy eigen code into tensorflow/include.
+     # A symlink would do, but the wheel file that gets created ignores
+     # symlink within the directory hierarchy.
+     # NOTE(keveman): Figure out how to customize bdist_wheel package so
+     # we can do the symlink.
+-    if 'external/eigen_archive/' in install_dir:
+-      extra_dir = install_dir.replace('external/eigen_archive', '')
++    if 'eigen_archive' in install_dir:
++      extra_dir = re.sub(r'external[/\\]eigen_archive', '', install_dir)
+       if not os.path.exists(extra_dir):
+         self.mkpath(extra_dir)
+       self.copy_file(header, extra_dir)
+-- 
+2.12.2.windows.2
+
