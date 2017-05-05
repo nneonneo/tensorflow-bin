@@ -89,11 +89,10 @@ REM copy a partial directory tree.
 REM Arguments: [src-root] [mask] [dst-root]
 REM   Files from src-root matching mask (recursively) are copied
 REM   to dst-root, maintaining directory structure.
-REM   src-root and dst-root should be absolute.
 REM Usage example: copydir C:\tools\boost-1.39.0\boost *.hpp E:\devel\include\boost
 REM   copies .hpp files to E:\devel\include\boost (e.g. creating E:\devel\include\boost\lambda\lambda.hpp).
 mkdir %3
-set SRCROOT="%~1"
-set DSTROOT="%~3"
+set SRCROOT="%~f1"
+set DSTROOT="%~f3"
 forfiles /p %SRCROOT% /s /m "%~2" /c "cmd /c if @isdir==FALSE pushd %%DSTROOT%% & for %%F in (@relpath) do @mkdir \"%%~dpF\" & copy %%SRCROOT%%\%%F %%F"
 exit /B 0
