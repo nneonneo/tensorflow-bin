@@ -7,6 +7,11 @@ REM - CMake (on PATH)
 REM - Swig (swigwin)
 REM - Visual Studio 2015
 
+REM Compile your programs with
+REM   -DEIGEN_AVOID_STL_ARRAY -DNOMINMAX -D_WIN32_WINNT=0x0A00 -DLANG_CXX11 -DCOMPILER_MSVC -DWIN32 -DOS_WIN -D_MBCS -DWIN64 -DWIN32_LEAN_AND_MEAN -DNOGDI -DPLATFORM_WINDOWS -DTENSORFLOW_USE_EIGEN_THREADPOOL -DEIGEN_HAS_C99_MATH -D_ITERATOR_DEBUG_LEVEL=0 -DNDEBUG /O2 /bigobj /EHsc
+REM and add the paths
+REM   -I %DISTDIR%\include %DISTDIR%\tensorflow.lib
+
 REM Setup build environment
 call "c:\Program Files (x86)\Microsoft Visual Studio 14.0\vc\bin\amd64\vcvars64.bat"
 
