@@ -21,12 +21,12 @@ mkdir "%DISTDIR%"
 
 REM Download Tensorflow
 set "BUILDDIR=%MYDIR%\build\tensorflow"
-git clone --depth=1 --branch=v1.1.0 https://github.com/tensorflow/tensorflow "%BUILDDIR%"
+git clone --depth=1 --branch=v1.1.0 https://github.com/tensorflow/tensorflow "%BUILDDIR%" || exit /B
 pushd "%BUILDDIR%"
 
 REM Apply patches
-git am "%MYDIR%\build-windows-0001.patch"
-git am "%MYDIR%\build-windows-0002.patch"
+git am "%MYDIR%\build-windows-0001.patch" || exit /B
+git am "%MYDIR%\build-windows-0002.patch" || exit /B
 
 REM Build with CMake
 mkdir tensorflow\contrib\cmake\build
@@ -35,11 +35,11 @@ cmake .. -A x64 -DCMAKE_BUILD_TYPE=Release ^
   -DSWIG_EXECUTABLE=C:/tools/swigwin-3.0.12/swig.exe ^
   -DPYTHON_EXECUTABLE="C:/Program Files/Python36/python.exe" ^
   -DPYTHON_LIBRARIES="C:/Program Files/Python36/libs/python36.lib" ^
-  -Dtensorflow_BUILD_SHARED_LIB=TRUE
+  -Dtensorflow_BUILD_SHARED_LIB=TRUE || exit /B
 
 REM Build project
-MSBuild /p:Configuration=Release tensorflow.vcxproj
-MSBuild /p:Configuration=Release tf_python_build_pip_package.vcxproj
+MSBuild /p:Configuration=Release tensorflow.vcxproj || exit /B
+MSBuild /p:Configuration=Release tf_python_build_pip_package.vcxproj || exit /B
 
 REM Copy headers and re-run package setup
 call :copydir "%BUILDDIR%\tensorflow\core" *.h "%cd%\tf_python\tensorflow\core"
@@ -54,7 +54,7 @@ python setup.py bdist_wheel
 popd
 
 REM Copy Python output
-copy tf-python\dist\*.whl "%DISTDIR%"
+copy tf_python\dist\*.whl "%DISTDIR%"
 
 REM Copy C++ output and headers
 for %%i in (cc core stream_executor) do (
@@ -76,6 +76,9 @@ copy Release\tensorflow.dll "%DISTDIR%"
 copy Release\tensorflow.lib "%DISTDIR%"
 copy Release\tensorflow.exp "%DISTDIR%"
 REM copy Release\tensorflow_static.lib "%DISTDIR%"
+
+popd
+popd
 
 exit /B %ERRORLEVEL%
 
